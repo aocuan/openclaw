@@ -9,7 +9,11 @@ import {
   type FeishuMessageEvent,
   type FeishuBotAddedEvent,
 } from "./bot.js";
-import { handleFeishuCardAction, type FeishuCardActionEvent } from "./card-action.js";
+import {
+  handleFeishuCardAction,
+  type FeishuCardActionEvent,
+  type FeishuCardActionResponse,
+} from "./card-action.js";
 import { createEventDispatcher } from "./client.js";
 import {
   hasRecordedMessage,
@@ -25,6 +29,7 @@ import { monitorWebhook, monitorWebSocket } from "./monitor.transport.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu } from "./send.js";
 import type { ResolvedFeishuAccount } from "./types.js";
+import { sendWelcomeCard } from "./welcome-card.js";
 
 const FEISHU_REACTION_VERIFY_TIMEOUT_MS = 1_500;
 
@@ -401,6 +406,25 @@ function registerEventHandlers(
       try {
         const event = data as unknown as FeishuBotAddedEvent;
         log(`feishu[${accountId}]: bot added to chat ${event.chat_id}`);
+
+        // Send welcome card if configured
+        const account = resolveFeishuAccount({ cfg, accountId });
+        const welcomeCardConfig = account.config.welcomeCard;
+        if (welcomeCardConfig?.enabled && event.chat_id) {
+          log(`feishu[${accountId}]: sending welcome card to chat ${event.chat_id}`);
+          try {
+            await sendWelcomeCard({
+              cfg,
+              chatId: event.chat_id,
+              welcomeCardConfig,
+              accountId,
+            });
+          } catch (cardErr) {
+            error(
+              `feishu[${accountId}]: failed to send welcome card to ${event.chat_id}: ${String(cardErr)}`,
+            );
+          }
+        }
       } catch (err) {
         error(`feishu[${accountId}]: error handling bot added event: ${String(err)}`);
       }
@@ -464,22 +488,23 @@ function registerEventHandlers(
     "card.action.trigger": async (data: unknown) => {
       try {
         const event = data as unknown as FeishuCardActionEvent;
-        const promise = handleFeishuCardAction({
+        const response = await handleFeishuCardAction({
           cfg,
           event,
           botOpenId: botOpenIds.get(accountId),
           runtime,
           accountId,
         });
-        if (fireAndForget) {
-          promise.catch((err) => {
-            error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
-          });
-        } else {
-          await promise;
-        }
+        // Return the response to Feishu so the client shows a Toast immediately
+        return response;
       } catch (err) {
         error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
+        return {
+          toast: {
+            type: "error" as const,
+            content: "处理失败，请稍后重试",
+          },
+        };
       }
     },
   });

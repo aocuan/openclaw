@@ -96,3 +96,23 @@ export type DynamicGroupAgentCreationConfig = {
   requireMention?: boolean;
   allowFrom?: Array<string | number>;
 };
+
+export type WelcomeCardSkillConfig = {
+  label: string;
+  command: string;
+  type?: "primary" | "default" | "danger";
+};
+
+export type WelcomeCardConfig = {
+  enabled?: boolean;
+  /** Raw card JSON (schema 2.0). When set, overrides all other card fields. */
+  cardJson?: Record<string, unknown>;
+  headerTitle?: string;
+  headerSubtitle?: string;
+  headerTemplate?: string;
+  bannerImgKey?: string;
+  iconImgKey?: string;
+  /** Prompt text shown above skill buttons. */
+  skillsPrompt?: string;
+  skills?: WelcomeCardSkillConfig[];
+};

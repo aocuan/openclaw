@@ -93,6 +93,34 @@ const DynamicGroupAgentCreationSchema = z
   .optional();
 
 /**
+ * Welcome card configuration.
+ * When enabled, bot sends an interactive card when first added to a group chat.
+ */
+const WelcomeCardSkillSchema = z
+  .object({
+    label: z.string(),
+    command: z.string(),
+    type: z.enum(["primary", "default", "danger"]).optional(),
+  })
+  .strict();
+
+const WelcomeCardSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    /** Raw card JSON (schema 2.0). When set, overrides all other card fields. */
+    cardJson: z.record(z.unknown()).optional(),
+    headerTitle: z.string().optional(),
+    headerSubtitle: z.string().optional(),
+    headerTemplate: z.string().optional(),
+    bannerImgKey: z.string().optional(),
+    iconImgKey: z.string().optional(),
+    skillsPrompt: z.string().optional(),
+    skills: z.array(WelcomeCardSkillSchema).optional(),
+  })
+  .strict()
+  .optional();
+
+/**
  * Feishu tools configuration.
  * Controls which tool categories are enabled.
  *
@@ -192,6 +220,7 @@ const FeishuSharedConfigShape = {
   reactionNotifications: ReactionNotificationModeSchema,
   typingIndicator: z.boolean().optional(),
   resolveSenderNames: z.boolean().optional(),
+  welcomeCard: WelcomeCardSchema,
 };
 
 /**
