@@ -625,10 +625,92 @@ openclaw pairing list feishu
 | ----------------- | --------------------------------------------- |
 | `agentId`         | 目标 Agent 的 ID，需要在 `agents.list` 中定义 |
 | `match.channel`   | 渠道类型，这里固定为 `"feishu"`               |
-| `match.peer.kind` | 对话类型：`"dm"`（私聊）或 `"group"`（群组）  |
+| `match.peer.kind` | 对话类型��`"dm"`（私聊）或 `"group"`（群组）  |
 | `match.peer.id`   | 用户 Open ID（`ou_xxx`）或群组 ID（`oc_xxx`） |
 
 > 获取 ID 的方法：参见上文 [获取群组/用户 ID](#获取群组用户-id) 章节。
+
+### 动态 Agent 创建
+
+动态 Agent 创建功能可以在遇到新的私聊用户或群组时，自动创建一个专属的 Agent 实例（包含独立的工作区和 Agent 目录），无需手动为每个用户或群组配置 `bindings`。
+
+#### 私聊动态 Agent
+
+启用后，每个私聊用户首次联系时会自动创建一个专属 Agent。Agent ID 格式为 `feishu-<open_id>`。
+
+```json5
+{
+  channels: {
+    feishu: {
+      dynamicAgentCreation: {
+        enabled: true,
+        // 可选：自定义工作区和 Agent 目录路径
+        // 支持的占位符：{userId}、{agentId}
+        workspaceTemplate: "~/.openclaw/workspace-{agentId}",
+        agentDirTemplate: "~/.openclaw/agents/{agentId}/agent",
+        // 可选：限制动态私聊 Agent 的最大数量
+        maxAgents: 100,
+      },
+    },
+  },
+}
+```
+
+#### 群组动态 Agent
+
+启用后，每个符合条件的群组首次触发时会自动创建一个专属 Agent。Agent ID 格式为 `feishu-group-<chat_id>`。
+
+```json5
+{
+  channels: {
+    feishu: {
+      groupDynamicAgentCreation: {
+        enabled: true,
+        // 可选：自定义工作区和 Agent 目录路径
+        // 支持的占位符：{groupId}、{chatId}、{agentId}
+        workspaceTemplate: "~/.openclaw/workspace-{agentId}",
+        agentDirTemplate: "~/.openclaw/agents/{agentId}/agent",
+        // 可选：限制动态群组 Agent 的最大数量
+        maxAgents: 50,
+        // 可选：是否需要 @机器人才触发群组初始化（默认 true）
+        requireMention: true,
+        // 可选：限制哪些群组可以触发动态创建
+        // 为空时遵循 groupPolicy 设置（如 "open" 允许所有群组）
+        allowFrom: ["oc_xxx", "oc_yyy"],
+      },
+    },
+  },
+}
+```
+
+**群组动态创建与 `groupPolicy` 的交互方式：**
+
+- 如果 `groupDynamicAgentCreation` 中设置了 `allowFrom`，则仅允许列出的群组触发创建。
+- 如果 `allowFrom` 为空，则根据当前 `groupPolicy` 设置决定（如 `"open"` 允许所有群组）。
+- `requireMention` 标志（默认 `true`）控制是否需要 @机器人才能触发首次群组初始化。
+
+### 话题内 @提及控制
+
+默认情况下，话题回复中的消息与顶层群组消息使用相同的 `requireMention` 设置。使用 `requireMentionInThread` 可以独立控制话题回复中的 @提及要求。
+
+```json5
+{
+  channels: {
+    feishu: {
+      requireMention: true,
+      // 覆盖：话题内不需要 @提及
+      requireMentionInThread: false,
+      groups: {
+        oc_xxx: {
+          requireMention: true,
+          // 单独为某个群组的话题设置
+          requireMentionInThread: false,
+        },
+      },
+    },
+  },
+}
+```
 
 ---
 
@@ -638,29 +720,41 @@ openclaw pairing list feishu
 
 主要选项：
 
-| 配置项                                            | 说明                              | 默认值           |
-| ------------------------------------------------- | --------------------------------- | ---------------- |
-| `channels.feishu.enabled`                         | 启用/禁用渠道                     | `true`           |
-| `channels.feishu.domain`                          | API 域名（`feishu` 或 `lark`）    | `feishu`         |
-| `channels.feishu.connectionMode`                  | 事件传输模式（websocket/webhook） | `websocket`      |
-| `channels.feishu.defaultAccount`                  | 出站路由默认账号 ID               | `default`        |
-| `channels.feishu.verificationToken`               | Webhook 模式必填                  | -                |
-| `channels.feishu.webhookPath`                     | Webhook 路由路径                  | `/feishu/events` |
-| `channels.feishu.webhookHost`                     | Webhook 监听地址                  | `127.0.0.1`      |
-| `channels.feishu.webhookPort`                     | Webhook 监听端口                  | `3000`           |
-| `channels.feishu.accounts.<id>.appId`             | 应用 App ID                       | -                |
-| `channels.feishu.accounts.<id>.appSecret`         | 应用 App Secret                   | -                |
-| `channels.feishu.accounts.<id>.domain`            | 单账号 API 域名覆盖               | `feishu`         |
-| `channels.feishu.dmPolicy`                        | 私聊策略                          | `pairing`        |
-| `channels.feishu.allowFrom`                       | 私聊白名单（open_id 列表）        | -                |
-| `channels.feishu.groupPolicy`                     | 群组策略                          | `open`           |
-| `channels.feishu.groupAllowFrom`                  | 群组白名单                        | -                |
-| `channels.feishu.groups.<chat_id>.requireMention` | 是否需要 @提及                    | `true`           |
-| `channels.feishu.groups.<chat_id>.enabled`        | 是否启用该群组                    | `true`           |
-| `channels.feishu.textChunkLimit`                  | 消息分块大小                      | `2000`           |
-| `channels.feishu.mediaMaxMb`                      | 媒体大小限制                      | `30`             |
-| `channels.feishu.streaming`                       | 启用流式卡片输出                  | `true`           |
-| `channels.feishu.blockStreaming`                  | 启用块级流式                      | `true`           |
+| 配置项                                                        | 说明                              | 默认值                               |
+| ------------------------------------------------------------- | --------------------------------- | ------------------------------------ |
+| `channels.feishu.enabled`                                     | 启用/禁用渠道                     | `true`                               |
+| `channels.feishu.domain`                                      | API 域名（`feishu` 或 `lark`）    | `feishu`                             |
+| `channels.feishu.connectionMode`                              | 事件传输模式（websocket/webhook） | `websocket`                          |
+| `channels.feishu.defaultAccount`                              | 出站路由默认账号 ID               | `default`                            |
+| `channels.feishu.verificationToken`                           | Webhook 模式必填                  | -                                    |
+| `channels.feishu.webhookPath`                                 | Webhook 路由路径                  | `/feishu/events`                     |
+| `channels.feishu.webhookHost`                                 | Webhook 监听地址                  | `127.0.0.1`                          |
+| `channels.feishu.webhookPort`                                 | Webhook 监听端口                  | `3000`                               |
+| `channels.feishu.accounts.<id>.appId`                         | 应用 App ID                       | -                                    |
+| `channels.feishu.accounts.<id>.appSecret`                     | 应用 App Secret                   | -                                    |
+| `channels.feishu.accounts.<id>.domain`                        | 单账号 API 域名覆盖               | `feishu`                             |
+| `channels.feishu.dmPolicy`                                    | 私聊策略                          | `pairing`                            |
+| `channels.feishu.allowFrom`                                   | 私聊白名单（open_id 列表）        | -                                    |
+| `channels.feishu.groupPolicy`                                 | 群组策略                          | `open`                               |
+| `channels.feishu.groupAllowFrom`                              | 群组白名单                        | -                                    |
+| `channels.feishu.groups.<chat_id>.requireMention`             | 是否需要 @提及                    | `true`                               |
+| `channels.feishu.groups.<chat_id>.enabled`                    | 是否启用该群组                    | `true`                               |
+| `channels.feishu.textChunkLimit`                              | 消息分块大小                      | `2000`                               |
+| `channels.feishu.mediaMaxMb`                                  | 媒体大小限制                      | `30`                                 |
+| `channels.feishu.streaming`                                   | 启用流式卡片输出                  | `true`                               |
+| `channels.feishu.blockStreaming`                              | 启用块级流式                      | `true`                               |
+| `channels.feishu.requireMentionInThread`                      | 话题回复中是否需要 @提及          | 同 `requireMention`                  |
+| `channels.feishu.groups.<chat_id>.requireMentionInThread`     | 单群组话题 @提及覆盖              | 同 `requireMention`                  |
+| `channels.feishu.dynamicAgentCreation.enabled`                | 启用私聊动态 Agent 创建           | `false`                              |
+| `channels.feishu.dynamicAgentCreation.workspaceTemplate`      | 工作区路径模板                    | `~/.openclaw/workspace-{agentId}`    |
+| `channels.feishu.dynamicAgentCreation.agentDirTemplate`       | Agent 目录路径模板                | `~/.openclaw/agents/{agentId}/agent` |
+| `channels.feishu.dynamicAgentCreation.maxAgents`              | 私聊动态 Agent 最大数量           | -                                    |
+| `channels.feishu.groupDynamicAgentCreation.enabled`           | 启用群组动态 Agent 创建           | `false`                              |
+| `channels.feishu.groupDynamicAgentCreation.workspaceTemplate` | 群组工作区路径模板                | `~/.openclaw/workspace-{agentId}`    |
+| `channels.feishu.groupDynamicAgentCreation.agentDirTemplate`  | 群组 Agent 目录路径模板           | `~/.openclaw/agents/{agentId}/agent` |
+| `channels.feishu.groupDynamicAgentCreation.maxAgents`         | 群组动态 Agent 最大数量           | -                                    |
+| `channels.feishu.groupDynamicAgentCreation.requireMention`    | 群组初始化是否需要 @提及          | `true`                               |
+| `channels.feishu.groupDynamicAgentCreation.allowFrom`         | 允许动态创建的群组列表            | -                                    |
 
 ---
 

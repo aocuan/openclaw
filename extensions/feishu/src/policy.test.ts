@@ -3,6 +3,7 @@ import {
   isFeishuGroupAllowed,
   resolveFeishuAllowlistMatch,
   resolveFeishuGroupConfig,
+  resolveFeishuReplyPolicy,
 } from "./policy.js";
 import type { FeishuConfig } from "./types.js";
 
@@ -54,6 +55,39 @@ describe("feishu policy", () => {
       });
 
       expect(resolved).toEqual({ requireMention: true });
+    });
+  });
+
+  describe("resolveFeishuReplyPolicy", () => {
+    it("keeps top-level group mention gating on the main group timeline", () => {
+      expect(
+        resolveFeishuReplyPolicy({
+          isDirectMessage: false,
+          isThreadReply: false,
+          globalConfig: { requireMention: true, requireMentionInThread: false } as FeishuConfig,
+        }),
+      ).toEqual({ requireMention: true });
+    });
+
+    it("allows thread replies to bypass mention when requireMentionInThread is false", () => {
+      expect(
+        resolveFeishuReplyPolicy({
+          isDirectMessage: false,
+          isThreadReply: true,
+          globalConfig: { requireMention: true, requireMentionInThread: false } as FeishuConfig,
+        }),
+      ).toEqual({ requireMention: false });
+    });
+
+    it("prefers explicit group thread mention policy over the global setting", () => {
+      expect(
+        resolveFeishuReplyPolicy({
+          isDirectMessage: false,
+          isThreadReply: true,
+          globalConfig: { requireMention: true, requireMentionInThread: false } as FeishuConfig,
+          groupConfig: { requireMentionInThread: true },
+        }),
+      ).toEqual({ requireMention: true });
     });
   });
 

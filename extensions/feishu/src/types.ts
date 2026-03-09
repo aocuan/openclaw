@@ -87,3 +87,12 @@ export type DynamicAgentCreationConfig = {
   agentDirTemplate?: string;
   maxAgents?: number;
 };
+
+export type DynamicGroupAgentCreationConfig = {
+  enabled?: boolean;
+  workspaceTemplate?: string;
+  agentDirTemplate?: string;
+  maxAgents?: number;
+  requireMention?: boolean;
+  allowFrom?: Array<string | number>;
+};

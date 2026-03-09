@@ -145,6 +145,32 @@ describe("FeishuConfigSchema replyInThread", () => {
   });
 });
 
+describe("FeishuConfigSchema requireMentionInThread", () => {
+  it("accepts requireMentionInThread at top level", () => {
+    const result = FeishuConfigSchema.parse({ requireMentionInThread: false });
+    expect(result.requireMentionInThread).toBe(false);
+  });
+
+  it("defaults requireMentionInThread to undefined when not set", () => {
+    const result = FeishuConfigSchema.parse({});
+    expect(result.requireMentionInThread).toBeUndefined();
+  });
+
+  it("accepts requireMentionInThread in group config", () => {
+    const result = FeishuGroupSchema.parse({ requireMentionInThread: false });
+    expect(result.requireMentionInThread).toBe(false);
+  });
+
+  it("accepts requireMentionInThread in account config", () => {
+    const result = FeishuConfigSchema.parse({
+      accounts: {
+        main: { requireMentionInThread: false },
+      },
+    });
+    expect(result.accounts?.main?.requireMentionInThread).toBe(false);
+  });
+});
+
 describe("FeishuConfigSchema optimization flags", () => {
   it("defaults top-level typingIndicator and resolveSenderNames to true", () => {
     const result = FeishuConfigSchema.parse({});

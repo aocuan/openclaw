@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../../test-utils/plugin-runtime-mock.js";
@@ -32,7 +34,7 @@ const {
     fileName: "clip.mp4",
   }),
   mockCreateFeishuClient: vi.fn(),
-  mockResolveAgentRoute: vi.fn(() => ({
+  mockResolveAgentRoute: vi.fn((_params?: unknown) => ({
     agentId: "main",
     channel: "feishu",
     accountId: "default",
@@ -1461,6 +1463,52 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 
+  it("uses parent_id as topic key for reply-only topic events", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-group": {
+              requireMention: false,
+              groupSessionScope: "group_topic",
+              replyInThread: "enabled",
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-topic-reply" } },
+      message: {
+        message_id: "msg-topic-reply-child",
+        parent_id: "om_topic_parent_only",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "reply in topic without root metadata" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockResolveAgentRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        peer: { kind: "group", id: "oc-group:topic:om_topic_parent_only" },
+        parentPeer: { kind: "group", id: "oc-group" },
+      }),
+    );
+    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyToMessageId: "om_topic_parent_only",
+        replyInThread: true,
+        threadReply: true,
+      }),
+    );
+  });
+
   it("keeps topic session key stable after first turn creates a thread", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
 
@@ -1707,6 +1755,155 @@ describe("handleFeishuMessage command authorization", () => {
         threadReply: true,
       }),
     );
+  });
+
+  it("allows thread replies without mention when requireMentionInThread is false", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-group": {
+              requireMention: true,
+              requireMentionInThread: false,
+              replyInThread: "enabled",
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-thread-mention-bypass" } },
+      message: {
+        message_id: "msg-thread-mention-bypass",
+        root_id: "om_root_thread_mention_bypass",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "follow-up without mention" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyToMessageId: "om_root_thread_mention_bypass",
+        rootId: "om_root_thread_mention_bypass",
+      }),
+    );
+  });
+
+  it("allows parent_id-only thread replies without mention when requireMentionInThread is false", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-group": {
+              requireMention: true,
+              requireMentionInThread: false,
+              replyInThread: "enabled",
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-thread-parent-only" } },
+      message: {
+        message_id: "msg-thread-parent-only",
+        parent_id: "om_parent_thread_mention_bypass",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "reply-only follow-up without mention" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockCreateFeishuReplyDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replyToMessageId: "om_parent_thread_mention_bypass",
+        replyInThread: true,
+        threadReply: true,
+      }),
+    );
+  });
+
+  it("still requires mention on the group main timeline when requireMentionInThread is false", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-group": {
+              requireMention: true,
+              requireMentionInThread: false,
+              replyInThread: "enabled",
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-main-timeline" } },
+      message: {
+        message_id: "msg-main-timeline-no-mention",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "top-level without mention" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockDispatchReplyFromConfig).not.toHaveBeenCalled();
+    expect(mockCreateFeishuReplyDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("still requires mention inside threads by default", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-group": {
+              requireMention: true,
+              replyInThread: "enabled",
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-thread-default-mention" } },
+      message: {
+        message_id: "msg-thread-default-mention",
+        root_id: "om_root_default_thread_mention",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "thread without mention" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockDispatchReplyFromConfig).not.toHaveBeenCalled();
+    expect(mockCreateFeishuReplyDispatcher).not.toHaveBeenCalled();
   });
 
   it("does not dispatch twice for the same image message_id (concurrent dedupe)", async () => {
@@ -2103,5 +2300,716 @@ describe("broadcast dispatch", () => {
     const sessionKey = (mockFinalizeInboundContext.mock.calls[0]?.[0] as { SessionKey: string })
       .SessionKey;
     expect(sessionKey).toBe("agent:susan:feishu:group:oc-broadcast-group");
+  });
+});
+
+describe("handleFeishuMessage dynamic agent creation", () => {
+  const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
+  const mockDispatchReplyFromConfig = vi
+    .fn()
+    .mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
+  const mockWithReplyDispatcher = vi.fn(
+    async ({
+      dispatcher,
+      run,
+      onSettled,
+    }: Parameters<PluginRuntime["channel"]["reply"]["withReplyDispatcher"]>[0]) => {
+      try {
+        return await run();
+      } finally {
+        dispatcher.markComplete();
+        try {
+          await dispatcher.waitForIdle();
+        } finally {
+          await onSettled?.();
+        }
+      }
+    },
+  );
+  const mockShouldComputeCommandAuthorized = vi.fn(() => false);
+  const mockLoadConfig = vi.fn();
+  const mockWriteConfigFile = vi.fn(async (_next: unknown) => {});
+  const mockSaveMediaBuffer = vi.fn().mockResolvedValue({
+    id: "inbound-clip.mp4",
+    path: "/tmp/inbound-clip.mp4",
+    size: Buffer.byteLength("video"),
+    contentType: "video/mp4",
+  });
+  const workspaceTemplate = path.join(os.tmpdir(), "openclaw-feishu-dynamic-workspace-{agentId}");
+  const agentDirTemplate = path.join(os.tmpdir(), "openclaw-feishu-dynamic-agent-{agentId}");
+  let currentConfig = {} as ClawdbotConfig;
+
+  type RoutePeer = { kind: "direct" | "group"; id: string };
+  type ParentPeer = { kind: "group"; id: string } | null | undefined;
+
+  function buildRoute(params: {
+    agentId: string;
+    matchedBy: string;
+    peer: RoutePeer;
+    accountId?: string | null;
+  }) {
+    return {
+      agentId: params.agentId,
+      channel: "feishu",
+      accountId: params.accountId ?? "default",
+      sessionKey: `agent:${params.agentId}:feishu:${params.peer.kind}:${params.peer.id}`,
+      mainSessionKey: `agent:${params.agentId}:main`,
+      matchedBy: params.matchedBy,
+    };
+  }
+
+  function resolveRouteFromConfig(params: {
+    cfg: ClawdbotConfig;
+    peer: RoutePeer;
+    accountId?: string | null;
+    parentPeer?: ParentPeer;
+  }) {
+    const directMatch = (params.cfg.bindings ?? []).find(
+      (binding) =>
+        binding.match?.channel === "feishu" &&
+        binding.match?.peer?.kind === params.peer.kind &&
+        binding.match?.peer?.id === params.peer.id,
+    );
+    if (directMatch) {
+      return buildRoute({
+        agentId: directMatch.agentId,
+        matchedBy: "binding.peer",
+        peer: params.peer,
+        accountId: params.accountId,
+      });
+    }
+
+    if (params.parentPeer?.id) {
+      const parentMatch = (params.cfg.bindings ?? []).find(
+        (binding) =>
+          binding.match?.channel === "feishu" &&
+          binding.match?.peer?.kind === params.parentPeer?.kind &&
+          binding.match?.peer?.id === params.parentPeer?.id,
+      );
+      if (parentMatch) {
+        return buildRoute({
+          agentId: parentMatch.agentId,
+          matchedBy: "binding.peer.parent",
+          peer: params.peer,
+          accountId: params.accountId,
+        });
+      }
+    }
+
+    return buildRoute({
+      agentId: "main",
+      matchedBy: "default",
+      peer: params.peer,
+      accountId: params.accountId,
+    });
+  }
+
+  function makeGroupEvent(params: {
+    messageId: string;
+    chatId: string;
+    mentioned?: boolean;
+    text?: string;
+    senderOpenId?: string;
+  }): FeishuMessageEvent {
+    return {
+      sender: {
+        sender_id: {
+          open_id: params.senderOpenId ?? "ou-group-sender",
+        },
+      },
+      message: {
+        message_id: params.messageId,
+        chat_id: params.chatId,
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: params.text ?? "hello group" }),
+        mentions: params.mentioned
+          ? [{ key: "@_bot_1", id: { open_id: "bot-open-id" }, name: "Bot", tenant_key: "" }]
+          : undefined,
+      },
+    };
+  }
+
+  function makeDmEvent(params: { messageId: string; senderOpenId: string }): FeishuMessageEvent {
+    return {
+      sender: {
+        sender_id: {
+          open_id: params.senderOpenId,
+        },
+      },
+      message: {
+        message_id: params.messageId,
+        chat_id: `oc-dm-${params.senderOpenId}`,
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello dm" }),
+      },
+    };
+  }
+
+  async function dispatchGroupMessage(params: {
+    cfg: ClawdbotConfig;
+    event: FeishuMessageEvent;
+    runtime?: RuntimeEnv;
+  }) {
+    currentConfig = params.cfg;
+    await handleFeishuMessage({
+      cfg: params.cfg,
+      event: params.event,
+      runtime: params.runtime ?? createRuntimeEnv(),
+      botOpenId: "bot-open-id",
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentConfig = {} as ClawdbotConfig;
+    mockShouldComputeCommandAuthorized.mockReset().mockReturnValue(false);
+    mockLoadConfig.mockReset().mockImplementation(() => currentConfig);
+    mockWriteConfigFile.mockReset().mockImplementation(async (next: unknown) => {
+      currentConfig = next as ClawdbotConfig;
+    });
+    mockCreateFeishuClient.mockReturnValue({
+      contact: {
+        user: {
+          get: vi.fn().mockResolvedValue({ data: { user: { name: "Sender" } } }),
+        },
+      },
+    });
+    mockResolveAgentRoute.mockImplementation((params?: unknown) => {
+      const typed = params as {
+        cfg: ClawdbotConfig;
+        peer: RoutePeer;
+        accountId?: string | null;
+        parentPeer?: ParentPeer;
+      };
+      return resolveRouteFromConfig({
+        cfg: typed.cfg,
+        peer: typed.peer,
+        accountId: typed.accountId,
+        parentPeer: typed.parentPeer,
+      });
+    });
+    setFeishuRuntime(
+      createPluginRuntimeMock({
+        config: {
+          loadConfig: mockLoadConfig,
+          writeConfigFile: mockWriteConfigFile,
+        },
+        channel: {
+          routing: {
+            resolveAgentRoute:
+              mockResolveAgentRoute as unknown as PluginRuntime["channel"]["routing"]["resolveAgentRoute"],
+          },
+          reply: {
+            resolveEnvelopeFormatOptions: vi.fn(
+              () => ({}),
+            ) as unknown as PluginRuntime["channel"]["reply"]["resolveEnvelopeFormatOptions"],
+            formatAgentEnvelope: vi.fn((params: { body: string }) => params.body),
+            finalizeInboundContext:
+              mockFinalizeInboundContext as unknown as PluginRuntime["channel"]["reply"]["finalizeInboundContext"],
+            dispatchReplyFromConfig: mockDispatchReplyFromConfig,
+            withReplyDispatcher:
+              mockWithReplyDispatcher as unknown as PluginRuntime["channel"]["reply"]["withReplyDispatcher"],
+          },
+          commands: {
+            shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized,
+            resolveCommandAuthorizedFromAuthorizers: vi.fn(() => false),
+          },
+          media: {
+            saveMediaBuffer:
+              mockSaveMediaBuffer as unknown as PluginRuntime["channel"]["media"]["saveMediaBuffer"],
+          },
+          pairing: {
+            readAllowFromStore: vi.fn().mockResolvedValue([]),
+            upsertPairingRequest: vi.fn().mockResolvedValue({ code: "ABCDEFGH", created: false }),
+            buildPairingReply: vi.fn(() => "Pairing response"),
+          },
+        },
+        media: {
+          detectMime: vi.fn(async () => "application/octet-stream"),
+        },
+      }),
+    );
+  });
+
+  it("creates a dedicated group agent and routes the current message to it", async () => {
+    const cfg: ClawdbotConfig = {
+      agents: { list: [{ id: "main" }] },
+      channels: {
+        feishu: {
+          groupPolicy: "allowlist",
+          groupDynamicAgentCreation: {
+            enabled: true,
+            allowFrom: ["oc-new-group"],
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    await dispatchGroupMessage({
+      cfg,
+      event: makeGroupEvent({
+        messageId: "msg-group-bootstrap",
+        chatId: "oc-new-group",
+        mentioned: true,
+      }),
+    });
+
+    expect(mockWriteConfigFile).toHaveBeenCalledTimes(1);
+    expect(mockResolveAgentRoute).toHaveBeenCalledTimes(3);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockWriteConfigFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agents: expect.objectContaining({
+          list: expect.arrayContaining([
+            expect.objectContaining({ id: "feishu-group-oc-new-group" }),
+          ]),
+        }),
+        bindings: expect.arrayContaining([
+          expect.objectContaining({
+            agentId: "feishu-group-oc-new-group",
+            match: expect.objectContaining({
+              channel: "feishu",
+              peer: { kind: "group", id: "oc-new-group" },
+            }),
+          }),
+        ]),
+      }),
+    );
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ agentId: "feishu-group-oc-new-group" }),
+          ]),
+        }),
+        ctx: expect.objectContaining({
+          SessionKey: "agent:feishu-group-oc-new-group:feishu:group:oc-new-group",
+        }),
+      }),
+    );
+  });
+
+  it("does not recreate a group agent when a binding already exists", async () => {
+    const cfg: ClawdbotConfig = {
+      agents: { list: [{ id: "main" }, { id: "feishu-group-oc-existing" }] },
+      bindings: [
+        {
+          agentId: "feishu-group-oc-existing",
+          match: {
+            channel: "feishu",
+            peer: { kind: "group", id: "oc-existing" },
+          },
+        },
+      ],
+      channels: {
+        feishu: {
+          groupPolicy: "open",
+          groupDynamicAgentCreation: {
+            enabled: true,
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+          requireMention: false,
+        },
+      },
+    } as ClawdbotConfig;
+
+    await dispatchGroupMessage({
+      cfg,
+      event: makeGroupEvent({
+        messageId: "msg-existing-group",
+        chatId: "oc-existing",
+        mentioned: true,
+      }),
+    });
+
+    expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          SessionKey: "agent:feishu-group-oc-existing:feishu:group:oc-existing",
+        }),
+      }),
+    );
+  });
+
+  it("does not create a group agent when the bot is not mentioned", async () => {
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groupPolicy: "open",
+          requireMention: false,
+          groupDynamicAgentCreation: {
+            enabled: true,
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    await dispatchGroupMessage({
+      cfg,
+      event: makeGroupEvent({
+        messageId: "msg-no-mention",
+        chatId: "oc-open-group",
+        mentioned: false,
+      }),
+    });
+
+    expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          SessionKey: "agent:main:feishu:group:oc-open-group",
+        }),
+      }),
+    );
+  });
+
+  it("does not create or dispatch for groups outside the dynamic creation strategy", async () => {
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groupPolicy: "allowlist",
+          groupDynamicAgentCreation: {
+            enabled: true,
+            allowFrom: ["oc-allowed-other"],
+            workspaceTemplate,
+            agentDirTemplate,
+            requireMention: false,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    await dispatchGroupMessage({
+      cfg,
+      event: makeGroupEvent({
+        messageId: "msg-blocked-group",
+        chatId: "oc-blocked-group",
+        mentioned: true,
+      }),
+    });
+
+    expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).not.toHaveBeenCalled();
+  });
+
+  it("creates only one group agent when two first-turn messages race", async () => {
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groupPolicy: "allowlist",
+          groupDynamicAgentCreation: {
+            enabled: true,
+            allowFrom: ["oc-race-group"],
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    await Promise.all([
+      dispatchGroupMessage({
+        cfg,
+        event: makeGroupEvent({
+          messageId: "msg-race-1",
+          chatId: "oc-race-group",
+          mentioned: true,
+          text: "first",
+        }),
+      }),
+      dispatchGroupMessage({
+        cfg,
+        event: makeGroupEvent({
+          messageId: "msg-race-2",
+          chatId: "oc-race-group",
+          mentioned: true,
+          text: "second",
+        }),
+      }),
+    ]);
+
+    expect(mockWriteConfigFile).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the updated config for the first DM message after dynamic creation", async () => {
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          dynamicAgentCreation: {
+            enabled: true,
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    currentConfig = cfg;
+    await dispatchMessage({
+      cfg,
+      event: makeDmEvent({
+        messageId: "msg-dm-bootstrap",
+        senderOpenId: "ou-dynamic-dm",
+      }),
+    });
+
+    expect(mockWriteConfigFile).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          bindings: expect.arrayContaining([
+            expect.objectContaining({
+              agentId: "feishu-ou-dynamic-dm",
+              match: expect.objectContaining({
+                channel: "feishu",
+                peer: { kind: "direct", id: "ou-dynamic-dm" },
+              }),
+            }),
+          ]),
+        }),
+        ctx: expect.objectContaining({
+          SessionKey: "agent:feishu-ou-dynamic-dm:feishu:direct:ou-dynamic-dm",
+        }),
+      }),
+    );
+  });
+
+  it("refreshes the group route from the latest config when monitor holds a stale snapshot", async () => {
+    const staleCfg: ClawdbotConfig = {
+      agents: { list: [{ id: "main" }] },
+      channels: {
+        feishu: {
+          groupPolicy: "open",
+          requireMention: false,
+          groupDynamicAgentCreation: {
+            enabled: true,
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    currentConfig = {
+      ...staleCfg,
+      agents: {
+        list: [{ id: "main" }, { id: "feishu-group-oc-stale-group" }],
+      },
+      bindings: [
+        {
+          agentId: "feishu-group-oc-stale-group",
+          match: {
+            channel: "feishu",
+            peer: { kind: "group", id: "oc-stale-group" },
+          },
+        },
+      ],
+    } as ClawdbotConfig;
+
+    await handleFeishuMessage({
+      cfg: staleCfg,
+      event: makeGroupEvent({
+        messageId: "msg-stale-group",
+        chatId: "oc-stale-group",
+        mentioned: true,
+      }),
+      runtime: createRuntimeEnv(),
+      botOpenId: "bot-open-id",
+    });
+
+    expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ agentId: "feishu-group-oc-stale-group" }),
+          ]),
+        }),
+        ctx: expect.objectContaining({
+          SessionKey: "agent:feishu-group-oc-stale-group:feishu:group:oc-stale-group",
+        }),
+      }),
+    );
+  });
+
+  it("refreshes the topic reply route from the latest config when monitor holds a stale snapshot", async () => {
+    const staleCfg: ClawdbotConfig = {
+      agents: { list: [{ id: "main" }] },
+      channels: {
+        feishu: {
+          groupPolicy: "open",
+          requireMention: false,
+          groupSessionScope: "group_topic",
+          replyInThread: "enabled",
+          groupDynamicAgentCreation: {
+            enabled: true,
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    currentConfig = {
+      ...staleCfg,
+      agents: {
+        list: [{ id: "main" }, { id: "feishu-group-oc-stale-topic" }],
+      },
+      bindings: [
+        {
+          agentId: "feishu-group-oc-stale-topic",
+          match: {
+            channel: "feishu",
+            peer: { kind: "group", id: "oc-stale-topic" },
+          },
+        },
+      ],
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-stale-topic-user" } },
+      message: {
+        message_id: "msg-stale-topic-reply",
+        parent_id: "om_parent_topic_reply",
+        chat_id: "oc-stale-topic",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "follow up in topic" }),
+      },
+    };
+
+    await handleFeishuMessage({
+      cfg: staleCfg,
+      event,
+      runtime: createRuntimeEnv(),
+      botOpenId: "bot-open-id",
+    });
+
+    expect(mockLoadConfig).toHaveBeenCalled();
+    expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ agentId: "feishu-group-oc-stale-topic" }),
+          ]),
+        }),
+        ctx: expect.objectContaining({
+          SessionKey:
+            "agent:feishu-group-oc-stale-topic:feishu:group:oc-stale-topic:topic:om_parent_topic_reply",
+        }),
+      }),
+    );
+  });
+
+  it("refreshes the DM route from the latest config when monitor holds a stale snapshot", async () => {
+    const staleCfg: ClawdbotConfig = {
+      agents: { list: [{ id: "main" }] },
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          dynamicAgentCreation: {
+            enabled: true,
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    currentConfig = {
+      ...staleCfg,
+      agents: {
+        list: [{ id: "main" }, { id: "feishu-ou-stale-dm" }],
+      },
+      bindings: [
+        {
+          agentId: "feishu-ou-stale-dm",
+          match: {
+            channel: "feishu",
+            peer: { kind: "direct", id: "ou-stale-dm" },
+          },
+        },
+      ],
+    } as ClawdbotConfig;
+
+    await handleFeishuMessage({
+      cfg: staleCfg,
+      event: makeDmEvent({
+        messageId: "msg-stale-dm",
+        senderOpenId: "ou-stale-dm",
+      }),
+      runtime: createRuntimeEnv(),
+      botOpenId: "bot-open-id",
+    });
+
+    expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: expect.objectContaining({
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ agentId: "feishu-ou-stale-dm" }),
+          ]),
+        }),
+        ctx: expect.objectContaining({
+          SessionKey: "agent:feishu-ou-stale-dm:feishu:direct:ou-stale-dm",
+        }),
+      }),
+    );
+  });
+
+  it("falls back to the default route when dynamic group creation fails", async () => {
+    mockWriteConfigFile.mockRejectedValueOnce(new Error("disk full"));
+    const runtime = createRuntimeEnv();
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groupPolicy: "allowlist",
+          groupDynamicAgentCreation: {
+            enabled: true,
+            allowFrom: ["oc-create-fails"],
+            workspaceTemplate,
+            agentDirTemplate,
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    currentConfig = cfg;
+    await handleFeishuMessage({
+      cfg,
+      event: makeGroupEvent({
+        messageId: "msg-create-fails",
+        chatId: "oc-create-fails",
+        mentioned: true,
+      }),
+      runtime,
+      botOpenId: "bot-open-id",
+    });
+
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("dynamic group agent creation failed for oc-create-fails"),
+    );
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          SessionKey: "agent:main:feishu:group:oc-create-fails",
+        }),
+      }),
+    );
   });
 });

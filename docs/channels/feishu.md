@@ -585,6 +585,88 @@ Routing fields:
 
 See [Get group/user IDs](#get-groupuser-ids) for lookup tips.
 
+### Dynamic agent creation
+
+Dynamic agent creation automatically provisions a dedicated agent instance (with its own workspace and agent directory) when a new DM user or group chat is encountered. This removes the need to manually configure `bindings` for every user or group.
+
+#### DM dynamic agents
+
+When enabled, a unique agent is created for each DM user on first contact. The agent ID follows the pattern `feishu-<open_id>`.
+
+```json5
+{
+  channels: {
+    feishu: {
+      dynamicAgentCreation: {
+        enabled: true,
+        // Optional: customize workspace and agent directory paths
+        // Supported placeholders: {userId}, {agentId}
+        workspaceTemplate: "~/.openclaw/workspace-{agentId}",
+        agentDirTemplate: "~/.openclaw/agents/{agentId}/agent",
+        // Optional: limit total number of dynamic DM agents
+        maxAgents: 100,
+      },
+    },
+  },
+}
+```
+
+#### Group dynamic agents
+
+When enabled, a unique agent is created for each eligible group chat. The agent ID follows the pattern `feishu-group-<chat_id>`.
+
+```json5
+{
+  channels: {
+    feishu: {
+      groupDynamicAgentCreation: {
+        enabled: true,
+        // Optional: customize workspace and agent directory paths
+        // Supported placeholders: {groupId}, {chatId}, {agentId}
+        workspaceTemplate: "~/.openclaw/workspace-{agentId}",
+        agentDirTemplate: "~/.openclaw/agents/{agentId}/agent",
+        // Optional: limit total number of dynamic group agents
+        maxAgents: 50,
+        // Optional: require @mention to trigger group bootstrap (default: true)
+        requireMention: true,
+        // Optional: restrict which groups can trigger dynamic creation
+        // When empty, follows groupPolicy (e.g. "open" allows all)
+        allowFrom: ["oc_xxx", "oc_yyy"],
+      },
+    },
+  },
+}
+```
+
+**How group dynamic creation interacts with `groupPolicy`:**
+
+- If `allowFrom` is set in `groupDynamicAgentCreation`, only listed groups can trigger creation.
+- If `allowFrom` is empty, groups are allowed based on the current `groupPolicy` setting (e.g. `"open"` allows all groups).
+- The `requireMention` flag (default `true`) controls whether the bot must be @mentioned to trigger the initial group bootstrap.
+
+### Thread mention control
+
+By default, messages in thread replies follow the same `requireMention` setting as top-level group messages. Use `requireMentionInThread` to override this behavior for thread replies independently.
+
+```json5
+{
+  channels: {
+    feishu: {
+      requireMention: true,
+      // Override: don't require @mention inside threads
+      requireMentionInThread: false,
+      groups: {
+        oc_xxx: {
+          requireMention: true,
+          // Per-group override for threads
+          requireMentionInThread: false,
+        },
+      },
+    },
+  },
+}
+```
+
 ---
 
 ## Configuration reference
@@ -593,29 +675,41 @@ Full configuration: [Gateway configuration](/gateway/configuration)
 
 Key options:
 
-| Setting                                           | Description                             | Default          |
-| ------------------------------------------------- | --------------------------------------- | ---------------- |
-| `channels.feishu.enabled`                         | Enable/disable channel                  | `true`           |
-| `channels.feishu.domain`                          | API domain (`feishu` or `lark`)         | `feishu`         |
-| `channels.feishu.connectionMode`                  | Event transport mode                    | `websocket`      |
-| `channels.feishu.defaultAccount`                  | Default account ID for outbound routing | `default`        |
-| `channels.feishu.verificationToken`               | Required for webhook mode               | -                |
-| `channels.feishu.webhookPath`                     | Webhook route path                      | `/feishu/events` |
-| `channels.feishu.webhookHost`                     | Webhook bind host                       | `127.0.0.1`      |
-| `channels.feishu.webhookPort`                     | Webhook bind port                       | `3000`           |
-| `channels.feishu.accounts.<id>.appId`             | App ID                                  | -                |
-| `channels.feishu.accounts.<id>.appSecret`         | App Secret                              | -                |
-| `channels.feishu.accounts.<id>.domain`            | Per-account API domain override         | `feishu`         |
-| `channels.feishu.dmPolicy`                        | DM policy                               | `pairing`        |
-| `channels.feishu.allowFrom`                       | DM allowlist (open_id list)             | -                |
-| `channels.feishu.groupPolicy`                     | Group policy                            | `open`           |
-| `channels.feishu.groupAllowFrom`                  | Group allowlist                         | -                |
-| `channels.feishu.groups.<chat_id>.requireMention` | Require @mention                        | `true`           |
-| `channels.feishu.groups.<chat_id>.enabled`        | Enable group                            | `true`           |
-| `channels.feishu.textChunkLimit`                  | Message chunk size                      | `2000`           |
-| `channels.feishu.mediaMaxMb`                      | Media size limit                        | `30`             |
-| `channels.feishu.streaming`                       | Enable streaming card output            | `true`           |
-| `channels.feishu.blockStreaming`                  | Enable block streaming                  | `true`           |
+| Setting                                                       | Description                             | Default                              |
+| ------------------------------------------------------------- | --------------------------------------- | ------------------------------------ |
+| `channels.feishu.enabled`                                     | Enable/disable channel                  | `true`                               |
+| `channels.feishu.domain`                                      | API domain (`feishu` or `lark`)         | `feishu`                             |
+| `channels.feishu.connectionMode`                              | Event transport mode                    | `websocket`                          |
+| `channels.feishu.defaultAccount`                              | Default account ID for outbound routing | `default`                            |
+| `channels.feishu.verificationToken`                           | Required for webhook mode               | -                                    |
+| `channels.feishu.webhookPath`                                 | Webhook route path                      | `/feishu/events`                     |
+| `channels.feishu.webhookHost`                                 | Webhook bind host                       | `127.0.0.1`                          |
+| `channels.feishu.webhookPort`                                 | Webhook bind port                       | `3000`                               |
+| `channels.feishu.accounts.<id>.appId`                         | App ID                                  | -                                    |
+| `channels.feishu.accounts.<id>.appSecret`                     | App Secret                              | -                                    |
+| `channels.feishu.accounts.<id>.domain`                        | Per-account API domain override         | `feishu`                             |
+| `channels.feishu.dmPolicy`                                    | DM policy                               | `pairing`                            |
+| `channels.feishu.allowFrom`                                   | DM allowlist (open_id list)             | -                                    |
+| `channels.feishu.groupPolicy`                                 | Group policy                            | `open`                               |
+| `channels.feishu.groupAllowFrom`                              | Group allowlist                         | -                                    |
+| `channels.feishu.groups.<chat_id>.requireMention`             | Require @mention                        | `true`                               |
+| `channels.feishu.groups.<chat_id>.enabled`                    | Enable group                            | `true`                               |
+| `channels.feishu.textChunkLimit`                              | Message chunk size                      | `2000`                               |
+| `channels.feishu.mediaMaxMb`                                  | Media size limit                        | `30`                                 |
+| `channels.feishu.streaming`                                   | Enable streaming card output            | `true`                               |
+| `channels.feishu.blockStreaming`                              | Enable block streaming                  | `true`                               |
+| `channels.feishu.requireMentionInThread`                      | Require @mention in thread replies      | same as `requireMention`             |
+| `channels.feishu.groups.<chat_id>.requireMentionInThread`     | Per-group thread mention override       | same as `requireMention`             |
+| `channels.feishu.dynamicAgentCreation.enabled`                | Enable dynamic DM agent creation        | `false`                              |
+| `channels.feishu.dynamicAgentCreation.workspaceTemplate`      | Workspace path template                 | `~/.openclaw/workspace-{agentId}`    |
+| `channels.feishu.dynamicAgentCreation.agentDirTemplate`       | Agent dir path template                 | `~/.openclaw/agents/{agentId}/agent` |
+| `channels.feishu.dynamicAgentCreation.maxAgents`              | Max number of dynamic DM agents         | -                                    |
+| `channels.feishu.groupDynamicAgentCreation.enabled`           | Enable dynamic group agent creation     | `false`                              |
+| `channels.feishu.groupDynamicAgentCreation.workspaceTemplate` | Group workspace path template           | `~/.openclaw/workspace-{agentId}`    |
+| `channels.feishu.groupDynamicAgentCreation.agentDirTemplate`  | Group agent dir path template           | `~/.openclaw/agents/{agentId}/agent` |
+| `channels.feishu.groupDynamicAgentCreation.maxAgents`         | Max number of dynamic group agents      | -                                    |
+| `channels.feishu.groupDynamicAgentCreation.requireMention`    | Require @mention for group bootstrap    | `true`                               |
+| `channels.feishu.groupDynamicAgentCreation.allowFrom`         | Groups allowed for dynamic creation     | -                                    |
 
 ---
 

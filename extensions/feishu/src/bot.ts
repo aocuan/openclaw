@@ -1,4 +1,4 @@
-import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
+import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
 import {
   buildAgentMediaPayload,
   buildPendingHistoryContextFromMap,
@@ -16,7 +16,7 @@ import {
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { tryRecordMessage, tryRecordMessagePersistent } from "./dedup.js";
-import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
+import { maybeCreateDynamicAgent, maybeCreateDynamicGroupAgent } from "./dynamic-agent.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
 import { downloadMessageResourceFeishu } from "./media.js";
 import { extractMentionTargets, isMentionForwardRequest } from "./mention.js";
@@ -31,7 +31,7 @@ import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
 import type { FeishuMessageContext, FeishuMediaInfo, ResolvedFeishuAccount } from "./types.js";
-import type { DynamicAgentCreationConfig } from "./types.js";
+import type { DynamicAgentCreationConfig, DynamicGroupAgentCreationConfig } from "./types.js";
 
 // --- Permission error extraction ---
 // Extract permission grant URL from Feishu API error response.
@@ -232,6 +232,7 @@ function resolveFeishuGroupSession(params: {
   chatId: string;
   senderOpenId: string;
   messageId: string;
+  parentId?: string;
   rootId?: string;
   threadId?: string;
   groupConfig?: {
@@ -245,14 +246,18 @@ function resolveFeishuGroupSession(params: {
     replyInThread?: "enabled" | "disabled";
   };
 }): ResolvedFeishuGroupSession {
-  const { chatId, senderOpenId, messageId, rootId, threadId, groupConfig, feishuCfg } = params;
+  const { chatId, senderOpenId, messageId, parentId, rootId, threadId, groupConfig, feishuCfg } =
+    params;
 
+  const normalizedParentId = parentId?.trim();
   const normalizedThreadId = threadId?.trim();
   const normalizedRootId = rootId?.trim();
-  const threadReply = Boolean(normalizedThreadId || normalizedRootId);
-  const replyInThread =
-    (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled" ||
-    threadReply;
+  const replyInThreadConfigured =
+    (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled";
+  const threadReply = Boolean(
+    normalizedThreadId || normalizedRootId || (replyInThreadConfigured && normalizedParentId),
+  );
+  const replyInThread = replyInThreadConfigured || threadReply;
 
   const legacyTopicSessionMode =
     groupConfig?.topicSessionMode ?? feishuCfg?.topicSessionMode ?? "disabled";
@@ -262,11 +267,13 @@ function resolveFeishuGroupSession(params: {
     (legacyTopicSessionMode === "enabled" ? "group_topic" : "group");
 
   // Keep topic session keys stable across the "first turn creates thread" flow:
-  // first turn may only have message_id, while the next turn carries root_id/thread_id.
-  // Prefer root_id first so both turns stay on the same peer key.
+  // first turn may only have message_id, while later deliveries may carry root_id,
+  // thread_id, or only parent_id for reply-style events.
   const topicScope =
     groupSessionScope === "group_topic" || groupSessionScope === "group_topic_sender"
-      ? (normalizedRootId ?? normalizedThreadId ?? (replyInThread ? messageId : null))
+      ? (normalizedRootId ??
+        normalizedThreadId ??
+        (replyInThread ? (normalizedParentId ?? messageId) : null))
       : null;
 
   let peerId = chatId;
@@ -859,6 +866,48 @@ export function buildFeishuAgentBody(params: {
   return messageBody;
 }
 
+function shouldAttemptDynamicGroupCreation(params: {
+  dynamicCfg?: DynamicGroupAgentCreationConfig;
+  groupPolicy: "open" | "allowlist" | "disabled";
+  chatId: string;
+  mentionedBot: boolean;
+}): boolean {
+  const { dynamicCfg, groupPolicy, chatId, mentionedBot } = params;
+  if (!dynamicCfg?.enabled) {
+    return false;
+  }
+
+  const requireMention = dynamicCfg.requireMention ?? true;
+  if (requireMention && !mentionedBot) {
+    return false;
+  }
+
+  const allowFrom = dynamicCfg.allowFrom ?? [];
+  if (allowFrom.length > 0) {
+    return resolveFeishuAllowlistMatch({
+      allowFrom,
+      senderId: chatId,
+    }).allowed;
+  }
+
+  return groupPolicy === "open";
+}
+
+async function loadLatestFeishuConfigSnapshot(
+  runtime: PluginRuntime,
+  fallback: ClawdbotConfig,
+): Promise<ClawdbotConfig> {
+  try {
+    const loaded = (await runtime.config.loadConfig()) as ClawdbotConfig;
+    if (loaded && typeof loaded === "object" && Object.keys(loaded).length > 0) {
+      return loaded;
+    }
+  } catch {
+    // Keep using the current snapshot when runtime reload is unavailable.
+  }
+  return fallback;
+}
+
 export async function handleFeishuMessage(params: {
   cfg: ClawdbotConfig;
   event: FeishuMessageEvent;
@@ -974,6 +1023,7 @@ export async function handleFeishuMessage(params: {
         chatId: ctx.chatId,
         senderOpenId: ctx.senderOpenId,
         messageId: ctx.messageId,
+        parentId: ctx.parentId,
         rootId: ctx.rootId,
         threadId: ctx.threadId,
         groupConfig,
@@ -988,6 +1038,8 @@ export async function handleFeishuMessage(params: {
   const broadcastAgents = rawBroadcastAgents
     ? [...new Set(rawBroadcastAgents.map((id) => normalizeAgentId(id)))]
     : null;
+  let resolvedGroupPolicy: "open" | "allowlist" | "disabled" =
+    feishuCfg?.groupPolicy ?? "allowlist";
 
   let requireMention = false; // DMs never require mention; groups may override below
   if (isGroup) {
@@ -1001,6 +1053,10 @@ export async function handleFeishuMessage(params: {
       groupPolicy: feishuCfg?.groupPolicy,
       defaultGroupPolicy,
     });
+    resolvedGroupPolicy = groupPolicy;
+    const groupDynamicCfg = feishuCfg?.groupDynamicAgentCreation as
+      | DynamicGroupAgentCreationConfig
+      | undefined;
     warnMissingProviderGroupPolicyFallbackOnce({
       providerMissingFallbackApplied,
       providerKey: "feishu",
@@ -1017,12 +1073,24 @@ export async function handleFeishuMessage(params: {
       senderId: ctx.chatId, // Check group ID, not sender ID
       senderName: undefined,
     });
+    const allowDynamicBootstrap = shouldAttemptDynamicGroupCreation({
+      dynamicCfg: groupDynamicCfg,
+      groupPolicy,
+      chatId: ctx.chatId,
+      mentionedBot: ctx.mentionedBot,
+    });
 
     if (!groupAllowed) {
-      log(
-        `feishu[${account.accountId}]: group ${ctx.chatId} not in groupAllowFrom (groupPolicy=${groupPolicy})`,
-      );
-      return;
+      if (allowDynamicBootstrap) {
+        log(
+          `feishu[${account.accountId}]: allowing group ${ctx.chatId} through dynamic bootstrap gate`,
+        );
+      } else {
+        log(
+          `feishu[${account.accountId}]: group ${ctx.chatId} not in groupAllowFrom (groupPolicy=${groupPolicy})`,
+        );
+        return;
+      }
     }
 
     // Sender-level allowlist: per-group allowFrom takes precedence, then global groupSenderAllowFrom
@@ -1046,6 +1114,7 @@ export async function handleFeishuMessage(params: {
 
     ({ requireMention } = resolveFeishuReplyPolicy({
       isDirectMessage: false,
+      isThreadReply: groupSession?.threadReply ?? false,
       globalConfig: feishuCfg,
       groupConfig,
     }));
@@ -1165,42 +1234,97 @@ export async function handleFeishuMessage(params: {
       );
     }
 
-    let route = core.channel.routing.resolveAgentRoute({
-      cfg,
-      channel: "feishu",
-      accountId: account.accountId,
-      peer: {
-        kind: isGroup ? "group" : "direct",
-        id: peerId,
-      },
-      parentPeer,
-    });
+    let effectiveCfg = cfg;
+    const resolveCurrentRoute = (nextCfg: ClawdbotConfig) =>
+      core.channel.routing.resolveAgentRoute({
+        cfg: nextCfg,
+        channel: "feishu",
+        accountId: account.accountId,
+        peer: {
+          kind: isGroup ? "group" : "direct",
+          id: peerId,
+        },
+        parentPeer,
+      });
+
+    let route = resolveCurrentRoute(effectiveCfg);
+    if (route.matchedBy === "default") {
+      effectiveCfg = await loadLatestFeishuConfigSnapshot(core, effectiveCfg);
+      route = resolveCurrentRoute(effectiveCfg);
+      if (route.matchedBy !== "default") {
+        log(
+          `feishu[${account.accountId}]: refreshed ${isGroup ? "group" : "DM"} route from latest config: ${route.sessionKey}`,
+        );
+      }
+    }
 
     // Dynamic agent creation for DM users
     // When enabled, creates a unique agent instance with its own workspace for each DM user.
-    let effectiveCfg = cfg;
     if (!isGroup && route.matchedBy === "default") {
       const dynamicCfg = feishuCfg?.dynamicAgentCreation as DynamicAgentCreationConfig | undefined;
       if (dynamicCfg?.enabled) {
-        const runtime = getFeishuRuntime();
-        const result = await maybeCreateDynamicAgent({
-          cfg,
-          runtime,
-          senderOpenId: ctx.senderOpenId,
-          dynamicCfg,
-          log: (msg) => log(msg),
-        });
-        if (result.created) {
-          effectiveCfg = result.updatedCfg;
-          // Re-resolve route with updated config
-          route = core.channel.routing.resolveAgentRoute({
-            cfg: result.updatedCfg,
-            channel: "feishu",
-            accountId: account.accountId,
-            peer: { kind: "direct", id: ctx.senderOpenId },
+        try {
+          const result = await maybeCreateDynamicAgent({
+            cfg,
+            runtime: core,
+            senderOpenId: ctx.senderOpenId,
+            dynamicCfg,
+            log: (msg) => log(msg),
           });
-          log(
-            `feishu[${account.accountId}]: dynamic agent created, new route: ${route.sessionKey}`,
+          effectiveCfg = result.updatedCfg;
+          route = resolveCurrentRoute(effectiveCfg);
+          if (result.created) {
+            log(
+              `feishu[${account.accountId}]: dynamic DM agent created, new route: ${route.sessionKey}`,
+            );
+          } else if (route.matchedBy !== "default") {
+            log(
+              `feishu[${account.accountId}]: refreshed DM route from latest config: ${route.sessionKey}`,
+            );
+          }
+        } catch (err) {
+          error(
+            `feishu[${account.accountId}]: dynamic DM agent creation failed for ${ctx.senderOpenId}: ${String(err)}`,
+          );
+        }
+      }
+    }
+
+    if (isGroup && !broadcastAgents && route.matchedBy === "default") {
+      const dynamicGroupCfg = feishuCfg?.groupDynamicAgentCreation as
+        | DynamicGroupAgentCreationConfig
+        | undefined;
+      if (
+        dynamicGroupCfg &&
+        shouldAttemptDynamicGroupCreation({
+          dynamicCfg: dynamicGroupCfg,
+          groupPolicy: resolvedGroupPolicy,
+          chatId: ctx.chatId,
+          mentionedBot: ctx.mentionedBot,
+        })
+      ) {
+        try {
+          const result = await maybeCreateDynamicGroupAgent({
+            cfg: effectiveCfg,
+            runtime: core,
+            chatId: ctx.chatId,
+            dynamicCfg: dynamicGroupCfg,
+            log: (msg) => log(msg),
+          });
+          effectiveCfg = result.updatedCfg;
+          route = resolveCurrentRoute(effectiveCfg);
+          if (result.created) {
+            log(
+              `feishu[${account.accountId}]: dynamic group agent created, new route: ${route.sessionKey}`,
+            );
+          } else if (route.matchedBy !== "default") {
+            log(
+              `feishu[${account.accountId}]: refreshed group route from latest config: ${route.sessionKey}`,
+            );
+          }
+        } catch (err) {
+          error(
+            `feishu[${account.accountId}]: dynamic group agent creation failed for ${ctx.chatId}: ${String(err)}`,
           );
         }
       }
@@ -1355,7 +1479,9 @@ export async function handleFeishuMessage(params: {
       isGroup &&
       (groupConfig?.replyInThread ?? feishuCfg?.replyInThread ?? "disabled") === "enabled";
     const replyTargetMessageId =
-      isTopicSession || configReplyInThread ? (ctx.rootId ?? ctx.messageId) : ctx.messageId;
+      isTopicSession || configReplyInThread
+        ? (ctx.rootId ?? ctx.parentId ?? ctx.messageId)
+        : ctx.messageId;
     const threadReply = isGroup ? (groupSession?.threadReply ?? false) : false;
 
     if (broadcastAgents) {
@@ -1500,7 +1626,7 @@ export async function handleFeishuMessage(params: {
       );
 
       const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
-        cfg,
+        cfg: effectiveCfg,
         agentId: route.agentId,
         runtime: runtime as RuntimeEnv,
         chatId: ctx.chatId,
@@ -1523,7 +1649,7 @@ export async function handleFeishuMessage(params: {
         run: () =>
           core.channel.reply.dispatchReplyFromConfig({
             ctx: ctxPayload,
-            cfg,
+            cfg: effectiveCfg,
             dispatcher,
             replyOptions,
           }),

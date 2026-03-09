@@ -109,6 +109,7 @@ export function isFeishuGroupAllowed(params: {
 
 export function resolveFeishuReplyPolicy(params: {
   isDirectMessage: boolean;
+  isThreadReply?: boolean;
   globalConfig?: FeishuConfig;
   groupConfig?: FeishuGroupConfig;
 }): { requireMention: boolean } {
@@ -118,6 +119,14 @@ export function resolveFeishuReplyPolicy(params: {
 
   const requireMention =
     params.groupConfig?.requireMention ?? params.globalConfig?.requireMention ?? true;
+  if (!params.isThreadReply) {
+    return { requireMention };
+  }
 
-  return { requireMention };
+  const requireMentionInThread =
+    params.groupConfig?.requireMentionInThread ??
+    params.globalConfig?.requireMentionInThread ??
+    requireMention;
+
+  return { requireMention: requireMentionInThread };
 }
