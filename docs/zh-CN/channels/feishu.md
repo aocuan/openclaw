@@ -714,6 +714,63 @@ openclaw pairing list feishu
 
 ---
 
+### 入群欢迎卡片
+
+当机器人被添加到群聊时，可以自动发送一张交互式欢迎卡片。用户选择功能选项并点击按钮即可触发对应的技能指令。
+
+在飞书渠道配置中添加 `welcomeCard` 即可启用：
+
+```json5
+{
+  channels: {
+    feishu: {
+      welcomeCard: {
+        enabled: true,
+        // 方式 A：使用结构化字段构建卡片
+        headerTitle: "我的机器人",
+        headerTemplate: "indigo",
+        bannerImgKey: "img_v3_xxxx",
+        skillsPrompt: "请选择你感兴趣的任务：",
+        skills: [
+          { label: "智能写作", command: "/smart_writing" },
+          { label: "数据分析", command: "/data_analysis" },
+        ],
+      },
+    },
+  },
+}
+```
+
+也可以通过 `cardJson` 提供完整的飞书卡片 JSON（schema 2.0）来完全自定义卡片布局。设置 `cardJson` 后，其他卡片字段将被忽略：
+
+```json5
+{
+  channels: {
+    feishu: {
+      welcomeCard: {
+        enabled: true,
+        cardJson: {
+          schema: "2.0",
+          config: { update_multi: true },
+          body: {
+            direction: "vertical",
+            elements: [
+              // ... 自定义卡片元素
+            ],
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+用户点击提交按钮后，卡片会更新为已完成状态并显示所选选项，同时对应的指令会作为消息被派发执行。
+
+卡片回调通过按钮 value 中的 `type` 字段来识别卡片类型。通过 `skills` 构建的卡片会自动设置 `type: "welcome_card"`。对于���定义 `cardJson`，可以在提交按钮中添加 `"value": { "type": "welcome_card" }` 以实现更严格的匹配；不添加也可以正常工作。
+
+---
+
 ## 配置参考
 
 完整配置请参考：[网关配置](/gateway/configuration)
@@ -755,6 +812,15 @@ openclaw pairing list feishu
 | `channels.feishu.groupDynamicAgentCreation.maxAgents`         | 群组动态 Agent 最大数量           | -                                    |
 | `channels.feishu.groupDynamicAgentCreation.requireMention`    | 群组初始化是否需要 @提及          | `true`                               |
 | `channels.feishu.groupDynamicAgentCreation.allowFrom`         | 允许动态创建的群组列表            | -                                    |
+| `channels.feishu.welcomeCard.enabled`                         | 入群时发送欢迎卡片                | `false`                              |
+| `channels.feishu.welcomeCard.cardJson`                        | 自定义卡片 JSON（覆盖其他字段）   | -                                    |
+| `channels.feishu.welcomeCard.headerTitle`                     | 卡片标题                          | `"小安同学"`                         |
+| `channels.feishu.welcomeCard.headerTemplate`                  | 卡片标题颜色模板                  | `"indigo"`                           |
+| `channels.feishu.welcomeCard.headerSubtitle`                  | 卡片副标题                        | -                                    |
+| `channels.feishu.welcomeCard.bannerImgKey`                    | 横幅图片 key                      | -                                    |
+| `channels.feishu.welcomeCard.iconImgKey`                      | 标题图标 key                      | -                                    |
+| `channels.feishu.welcomeCard.skillsPrompt`                    | 技能按钮上方提示文案              | `"请选择你感兴趣的任务："`           |
+| `channels.feishu.welcomeCard.skills`                          | 技能按钮配置数组                  | -                                    |
 
 ---
 

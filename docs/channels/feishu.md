@@ -669,6 +669,63 @@ By default, messages in thread replies follow the same `requireMention` setting 
 
 ---
 
+### Welcome card
+
+When the bot is added to a group chat, it can automatically send an interactive welcome card. Users select an option and click the button to trigger the corresponding skill command.
+
+Enable by adding `welcomeCard` to the feishu channel config:
+
+```json5
+{
+  channels: {
+    feishu: {
+      welcomeCard: {
+        enabled: true,
+        // Option A: use structured fields to build the card
+        headerTitle: "My Bot",
+        headerTemplate: "indigo",
+        bannerImgKey: "img_v3_xxxx",
+        skillsPrompt: "Pick a task to get started:",
+        skills: [
+          { label: "Smart Writing", command: "/smart_writing" },
+          { label: "Data Analysis", command: "/data_analysis" },
+        ],
+      },
+    },
+  },
+}
+```
+
+Alternatively, provide a raw Feishu card JSON (schema 2.0) via `cardJson` to fully control the card layout. When `cardJson` is set, all other card fields are ignored:
+
+```json5
+{
+  channels: {
+    feishu: {
+      welcomeCard: {
+        enabled: true,
+        cardJson: {
+          schema: "2.0",
+          config: { update_multi: true },
+          body: {
+            direction: "vertical",
+            elements: [
+              // ... your custom card elements
+            ],
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+After a user clicks the submit button, the card updates to a completed state showing the selected option, and the corresponding command is dispatched as a message.
+
+Card action callbacks use a `type` field in the button value to identify the card. When building cards programmatically (via `skills`), the type `"welcome_card"` is set automatically. For raw `cardJson`, you can optionally add `"value": { "type": "welcome_card" }` to the submit button for stricter matching; omitting it also works.
+
+---
+
 ## Configuration reference
 
 Full configuration: [Gateway configuration](/gateway/configuration)
@@ -710,6 +767,15 @@ Key options:
 | `channels.feishu.groupDynamicAgentCreation.maxAgents`         | Max number of dynamic group agents      | -                                    |
 | `channels.feishu.groupDynamicAgentCreation.requireMention`    | Require @mention for group bootstrap    | `true`                               |
 | `channels.feishu.groupDynamicAgentCreation.allowFrom`         | Groups allowed for dynamic creation     | -                                    |
+| `channels.feishu.welcomeCard.enabled`                         | Send welcome card when bot joins group  | `false`                              |
+| `channels.feishu.welcomeCard.cardJson`                        | Raw card JSON (overrides other fields)  | -                                    |
+| `channels.feishu.welcomeCard.headerTitle`                     | Card header title                       | `"小安同学"`                         |
+| `channels.feishu.welcomeCard.headerTemplate`                  | Card header color template              | `"indigo"`                           |
+| `channels.feishu.welcomeCard.headerSubtitle`                  | Card header subtitle                    | -                                    |
+| `channels.feishu.welcomeCard.bannerImgKey`                    | Banner image key                        | -                                    |
+| `channels.feishu.welcomeCard.iconImgKey`                      | Header icon image key                   | -                                    |
+| `channels.feishu.welcomeCard.skillsPrompt`                    | Prompt text above skill buttons         | `"请选择你感兴趣的任务："`           |
+| `channels.feishu.welcomeCard.skills`                          | Array of skill button configs           | -                                    |
 
 ---
 
